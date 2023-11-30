@@ -1,5 +1,6 @@
 import numpy as np
 from scipy.interpolate import make_interp_spline, CubicHermiteSpline
+import sys
 
 import h5py
 from auriga_config import *
@@ -19,12 +20,12 @@ plt.ion()
 # Select the simulation:
 #--------------------------------------------------------------------
 snapshot = 127
-halo = 11
+halo = int(sys.argv[1])
 #--------------------------------------------------------------------
 
 # Step 1; load the snapshot at z=0 and get the metal ratios:
 #--------------------------------------------------------------------
-data_fields = ['POS ', 'VEL ', 'MASS', 'ID  ', 'POT ', 'GAGE', 'GMET']
+data_fields = ['POS ', 'VEL ', 'MASS', 'ID  ', 'GAGE', 'GMET']
 cat_fields = ['GroupFirstSub', 'Group_R_Crit200', 'SubhaloPos', 'SubhaloVel']
 header, cat, lf, data = get_data(halo, snapshot, data_fields=data_fields, cat_fields=cat_fields)
 #--------------------------------------------------------------------
@@ -87,7 +88,7 @@ time_bins = end_time - time_bins
 # Metal abundance binning:
 metal_range = np.nanpercentile(data['MgFe'][data['IN  '] & \
                               (data['GAGE'] < a_bins[-1]) & \
-                              (data['GAGE'] > a_bins[0])], [0.1,99.9])
+                              (data['GAGE'] > a_bins[0])], [0.1,99.95])
 metal_range += [-0.025, 0.025]
 metal_bins = np.linspace(*metal_range, 125)
 
@@ -98,22 +99,26 @@ ax[2].set_ylabel('[Mg/Fe]', fontsize=fs)
 
 # Star formation history:
 bin_size = time_bins[0] - time_bins[1]
-cuts = [(data['RG  '] <= 5) * data['IN  '], data['IN  ']]
+cuts = [data['IN  '], (data['RG  '] <= 5) * data['IN  ']]
 hyphen = u"\u2010"
-labels = [r'$In%ssitu$, $R_{\rm G}<5\,$kpc' % hyphen, r'$In%ssitu$' % hyphen]
-colours = ['r', 'k']
+labels = [r'$In%ssitu$' % hyphen, r'$In%ssitu$, $R_{\rm G}<5\,$kpc' % hyphen]
+colours = ['mediumblue', 'cornflowerblue']
 for cut, label, colour in zip(cuts, labels, colours):
   SFR_hist = np.histogram(data['GAGE'][cut], bins=a_bins, weights=data['MASS'][cut])[0] / (bin_size*1e9)
-  ax[1].step(time_bins[:-1], SFR_hist, label=label, color=colour, where='pre')
+  #ax[1].step(time_bins[:-1], SFR_hist, label=label, color=colour, where='pre')
+  ax[1].fill_between(time_bins[1:], SFR_hist, label=label, color=colour, step='post')
 ax[1].set_ylabel(r'SFR [M$_{\odot}\,$yr$^{-1}$]', fontsize=fs)
 ax[1].set_yscale('log')
 ax[1].set_ylim(ymin=1e-1)
+
+ax[1].legend(fontsize=fs-4, loc='lower right')
 
 # Trajectories:
 factor = 10
 a = 1 / (1+redshifts)
 times = np.array([auriga.age_time(i) for i in a])
-r200s = f['Group_R_Crit200'][:][f['FirstHaloInFOFGroup'][:][IDs]]*1e3/h
+#r200s = f['Group_R_Crit200'][:][f['FirstHaloInFOFGroup'][:][IDs]] * a[f['SnapNum'][:][IDs]]*1e3/h
+r200s = f['Group_R_Crit200'][:][f['FirstHaloInFOFGroup'][:][IDs]] *1e3/h
 for pkmassid, pkmass in zip(pkmassids, pkmasses):
   if len(merger_IDs[pkmassid]) < 5:
     continue
@@ -122,29 +127,32 @@ for pkmassid, pkmass in zip(pkmassids, pkmasses):
   overlap2 = np.in1d(f['SnapNum'][:][merger_IDs[pkmassid]], f['SnapNum'][:][IDs])
   orig_res = f['SnapNum'][:][merger_IDs[pkmassid]][overlap2]
   spline_res = np.linspace(*orig_res[[0,-1]], len(orig_res)*factor)
-  pos = (f['SubhaloPos'][:][merger_IDs[pkmassid]][overlap2] - f['SubhaloPos'][:][IDs][overlap1])*np.vstack(np.sqrt(1/a[orig_res]))*1e3/h
-  #vel = (f['SubhaloVel'][:][merger_IDs[pkmassid]][overlap2] - f['SubhaloVel'][:][IDs][overlap1])*np.vstack(np.sqrt(1/a[orig_res]))
-  #pos = CubicHermiteSpline(orig_res, pos, vel)(spline_res)
-  pos = make_interp_spline(orig_res, pos, k=3)(spline_res)
+  pos = (f['SubhaloPos'][:][merger_IDs[pkmassid]][overlap2] - f['SubhaloPos'][:][IDs][overlap1])*1e3/h
+  vel = (f['SubhaloVel'][:][merger_IDs[pkmassid]][overlap2] - f['SubhaloVel'][:][IDs][overlap1])#*np.vstack(np.sqrt(1/a[orig_res]))
+  #pos = CubicHermiteSpline(times[orig_res], pos, vel)(spline_res_t)
+  pos = make_interp_spline(times[orig_res], pos, k=3)(spline_res)
   RG = np.linalg.norm(pos, axis=1)
   time = end_time - np.interp(spline_res, orig_res, times[orig_res])
 
   ax[0].plot(time, RG)
+  ax[0].plot(time[-1], RG[-1], 'kx', markersize=4)
 
   # Find intercept at top of plot:
   intercept = abs(RG - r200s.max()*1.1).argmin()
-  if any(i > 0 for i in RG - r200s.max()*1.1):
+  if any(i > 0 for i in RG - r200s.max()*1.1) & any(i < 0 for i in RG - r200s.max()*1.1):
     intercept = np.where((np.sign((RG - r200s.max()*1.1)[:-1])==1) & \
                          (np.sign((RG - r200s.max()*1.1)[1:])==-1))[0][0] + 1
-  else:
+  elif any(i < 0 for i in RG - r200s.max()*1.1):
     intercept = 0
+  else:
+    continue
   string = r'$%i, %s\,$M$_{\odot}$' % (pkmassid, auriga.latex_float(pkmass))
   ax[0].text(time[intercept], 1.03, string, va='bottom', ha='center', \
              transform=ax[0].get_xaxis_transform(), fontsize=fs-8, rotation=90)
 
-ax[0].set_ylabel(r'$R_{\rm G}$ [kpc]', fontsize=fs)
+ax[0].set_ylabel(r'$R_{\rm G}$ [ckpc]', fontsize=fs)
 
-ax[0].plot(end_time - times[f['SnapNum'][:][IDs]], r200s, color='k')
+ax[0].fill_between(end_time - times[f['SnapNum'][:][IDs]], r200s, np.ones_like(r200s)*r200s.max()*1.1, color='lightgrey', zorder=0)
 ax[0].set_ylim(0, r200s.max()*1.1)
 #--------------------------------------------------------------------
 
@@ -156,7 +164,7 @@ ax[2].set_xlabel('Lookback time [Gyr]', fontsize=fs)
 
 fig.suptitle(r'Au-%i' % halo, fontsize=fs, y=0.975)
 
-plt.savefig('./images/merger_vs_ratios_Au-%i.pdf' % halo, bbox_inches='tight')
+#plt.savefig('./images/merger_vs_ratios_Au-%i.pdf' % halo, bbox_inches='tight')
 
 # Add a redshift axis:
 '''
