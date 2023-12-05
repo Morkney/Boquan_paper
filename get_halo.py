@@ -10,6 +10,8 @@ def get_data(halo, snapshot=127, GrNr=0, SubhaloNumber=0, PtType=4, data_fields=
   #--------------------------------------------------------------------
   header = snap.snapshot_header(lvl4_basepath + '/halo_%i/output/snapdir_%03i/snapshot_%03i.0.hdf5' % (halo, snapshot, snapshot))
   h, a = header.hubble, header.time
+  if 'GroupFirstSub' not in cat_fields:
+    cat_fields += ['GroupFirstSub']
   cat = readsubfHDF5.subfind_catalog(lvl4_basepath+'/halo_%i/output/' % halo, snapshot, long_ids=True, keysel=cat_fields)
 
   data = {}
@@ -17,13 +19,13 @@ def get_data(halo, snapshot=127, GrNr=0, SubhaloNumber=0, PtType=4, data_fields=
     data_fields += ['ID  ']
   readhaloHDF5.reset()
   for field in data_fields:
-    data[field] = readhaloHDF5.readhalo(lvl4_basepath+'/halo_%i/output/' % halo, snapbase, snapshot, field, PtType, GrNr, SubhaloNumber, long_ids=True)
+    data[field] = readhaloHDF5.readhalo(lvl4_basepath+'/halo_%i/output/' % halo, snapbase, snapshot, field, PtType, GrNr, SubhaloNumber-cat.GroupFirstSub[GrNr], long_ids=True)
 
   # Correct units:
   if 'SubhaloPos' in cat_fields:
-    data['POS '] -= cat.SubhaloPos[GrNr]
+    data['POS '] -= cat.SubhaloPos[SubhaloNumber]
   if 'SubhaloVel' in cat_fields:
-    data['VEL '] -= cat.SubhaloVel[GrNr] * np.sqrt(1/a)
+    data['VEL '] -= cat.SubhaloVel[SubhaloNumber] * np.sqrt(1/a)
   auriga.physical_units(data, a, h)
 
   # Remove wind particles:
@@ -42,8 +44,9 @@ def get_data(halo, snapshot=127, GrNr=0, SubhaloNumber=0, PtType=4, data_fields=
 
   # Find in/ex-situ:
   lf = auriga.listfile(lvl4_basepath, halo)
-  data['IN  '] = np.in1d(data['ID  '], lf.mdata['Insitu']['ParticleIDs'])
-  data['EX  '] = np.in1d(data['ID  '], lf.mdata['Exsitu']['ParticleIDs'])
+  if PtType==4:
+    data['IN  '] = np.in1d(data['ID  '], lf.mdata['Insitu']['ParticleIDs'])
+    data['EX  '] = np.in1d(data['ID  '], lf.mdata['Exsitu']['ParticleIDs'])
 
   # Align on the disc:
   if align_on_disc & ('POS ' in data_fields) & ('VEL ' in data_fields) & ('MASS' in data_fields):

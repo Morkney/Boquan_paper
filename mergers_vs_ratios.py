@@ -39,8 +39,17 @@ redshifts = np.array(h5py.File(tree_path, 'r')['Header']['Redshifts'][:])
 pkmassids = np.unique(lf.mdata['Exsitu']['PeakMassIndex'])
 pkmassids = pkmassids[pkmassids != -1]
 pkmasses = f['SubhaloMassType'][:][pkmassids].sum(axis=1) * 1e10/h
-pkmassids = pkmassids[pkmasses >= 5e9]
-pkmasses = pkmasses[pkmasses >= 5e9]
+ID = 0
+IDs = {}
+while ID != -1:
+  IDs[f['SnapNum'][ID]] = ID
+  ID = f['FirstProgenitor'][ID]
+main_IDs = [IDs[i] for i in f['SnapNum'][:][pkmassids]]
+mass_ratios = f['SubhaloMassType'][:][pkmassids].sum(axis=1) / \
+              f['SubhaloMassType'][:][main_IDs].sum(axis=1)
+
+pkmassids = pkmassids[(mass_ratios > 1/30.) | (pkmasses > 1e10)]
+pkmasses = pkmasses[(mass_ratios > 1/30.) | (pkmasses > 1e10)]
 #--------------------------------------------------------------------
 
 # Step 3; find the progenitor histories of all mergers:
@@ -80,7 +89,7 @@ fs = 10
 fig, ax = plt.subplots(figsize=(10, 5), nrows=3, ncols=1, gridspec_kw={'hspace':0.0, 'wspace':0.0, 'height_ratios':[0.25, 0.25, 0.50]})
 
 # Time binning:
-time_bins = np.linspace(0.8, 13.8, 500)
+time_bins = np.linspace(0.3, 13.8, 500)
 a_bins = auriga.time_age(time_bins)
 end_time = auriga.age_time(1)
 time_bins = end_time - time_bins
@@ -91,6 +100,8 @@ metal_range = np.nanpercentile(data['MgFe'][data['IN  '] & \
                               (data['GAGE'] > a_bins[0])], [0.1,99.95])
 metal_range += [-0.025, 0.025]
 metal_bins = np.linspace(*metal_range, 125)
+
+data['IN  '] *= data['RG  '] <= 15
 
 hist = np.histogram2d(data['GAGE'][data['IN  ']], data['MgFe'][data['IN  ']], bins=[a_bins, metal_bins], weights=data['MASS'][data['IN  ']])
 aspect = np.abs(np.diff([*time_bins[[-1,0]]])) / np.abs(np.diff([*metal_range])) / 4.
@@ -105,7 +116,6 @@ labels = [r'$In%ssitu$' % hyphen, r'$In%ssitu$, $R_{\rm G}<5\,$kpc' % hyphen]
 colours = ['mediumblue', 'cornflowerblue']
 for cut, label, colour in zip(cuts, labels, colours):
   SFR_hist = np.histogram(data['GAGE'][cut], bins=a_bins, weights=data['MASS'][cut])[0] / (bin_size*1e9)
-  #ax[1].step(time_bins[:-1], SFR_hist, label=label, color=colour, where='pre')
   ax[1].fill_between(time_bins[1:], SFR_hist, label=label, color=colour, step='post')
 ax[1].set_ylabel(r'SFR [M$_{\odot}\,$yr$^{-1}$]', fontsize=fs)
 ax[1].set_yscale('log')
@@ -117,8 +127,7 @@ ax[1].legend(fontsize=fs-4, loc='lower right')
 factor = 10
 a = 1 / (1+redshifts)
 times = np.array([auriga.age_time(i) for i in a])
-#r200s = f['Group_R_Crit200'][:][f['FirstHaloInFOFGroup'][:][IDs]] * a[f['SnapNum'][:][IDs]]*1e3/h
-r200s = f['Group_R_Crit200'][:][f['FirstHaloInFOFGroup'][:][IDs]] *1e3/h
+r200s = f['Group_R_Crit200'][:][f['FirstHaloInFOFGroup'][:][IDs]] * 1e3/h
 for pkmassid, pkmass in zip(pkmassids, pkmasses):
   if len(merger_IDs[pkmassid]) < 5:
     continue
@@ -129,8 +138,7 @@ for pkmassid, pkmass in zip(pkmassids, pkmasses):
   spline_res = np.linspace(*orig_res[[0,-1]], len(orig_res)*factor)
   pos = (f['SubhaloPos'][:][merger_IDs[pkmassid]][overlap2] - f['SubhaloPos'][:][IDs][overlap1])*1e3/h
   vel = (f['SubhaloVel'][:][merger_IDs[pkmassid]][overlap2] - f['SubhaloVel'][:][IDs][overlap1])#*np.vstack(np.sqrt(1/a[orig_res]))
-  #pos = CubicHermiteSpline(times[orig_res], pos, vel)(spline_res_t)
-  pos = make_interp_spline(times[orig_res], pos, k=3)(spline_res)
+  pos = make_interp_spline(orig_res, pos, k=3)(spline_res)
   RG = np.linalg.norm(pos, axis=1)
   time = end_time - np.interp(spline_res, orig_res, times[orig_res])
 
@@ -159,12 +167,12 @@ ax[0].set_ylim(0, r200s.max()*1.1)
 for i in range(3):
   ax[i].tick_params(axis='both', labelsize=fs-2)
   ax[i].label_outer()
-  ax[i].set_xlim([13, 0])
+  ax[i].set_xlim([13.5, 0])
 ax[2].set_xlabel('Lookback time [Gyr]', fontsize=fs)
 
 fig.suptitle(r'Au-%i' % halo, fontsize=fs, y=0.975)
 
-#plt.savefig('./images/merger_vs_ratios_Au-%i.pdf' % halo, bbox_inches='tight')
+plt.savefig('./images/infalls/merger_infalls_Au-%i.pdf' % halo, bbox_inches='tight')
 
 # Add a redshift axis:
 '''

@@ -18,19 +18,42 @@ from matplotlib.collections import LineCollection
 import matplotlib.patheffects as path_effects
 plt.ion()
 
+from scipy.ndimage import gaussian_filter
+
+def remove_nan(U, sigma=1):
+  V = U.copy()
+  V[np.isnan(U)] = 0
+  VV = gaussian_filter(V, sigma=sigma)
+  W = 0*U.copy()+1
+  W[np.isnan(U)] = 0
+  WW = gaussian_filter(W, sigma=sigma)
+  V[np.isnan(U)] = (VV/WW)[np.isnan(U)]
+  return V
+
 paths = [path_effects.Stroke(linewidth=2, foreground='k'), path_effects.Normal()]
 
 # Select the simulation:
 #--------------------------------------------------------------------
-snapshot = 127
+snapshot = 80
 halo = int(sys.argv[1])
+
+# Find the halo information:
+tree_path = lvl4_basepath + 'mergertrees/halo_%i/' % halo + 'trees_sf1_%i.0.hdf5' % 127
+f = h5py.File(tree_path, "r")['Tree0']
+ID = 0
+while f['SnapNum'][ID] != snapshot:
+  ID = f['FirstProgenitor'][ID]
+  if ID == -1:
+    sys.exit()
+GrNr = f['SubhaloGrNr'][ID]
+SubhaloNumber = f['SubhaloNumber'][ID]
 #--------------------------------------------------------------------
 density_cmap = cm.cubehelix
 metal_cmap = cm.viridis
 alpha_cmap = cm.plasma
 v_cmap = cm.gnuplot
 clabels = [r'$\log_{10}$ Density [M$_{\odot}\,$kpc$^{-2}$]', \
-           r'$\log_{10}$ SFR [M$_{\odot}\,$yr$^{-1}\,$kpc$^{-2}$]', \
+           r'$\log_{10}$ SFE [M$_{\odot}\,$yr$^{-1}\,$kpc$^{-2}$]', \
            r'[Fe/H]', \
            r'[Mg/Fe]']
 # Turn SFR into SFE?
@@ -39,7 +62,7 @@ clabels = [r'$\log_{10}$ Density [M$_{\odot}\,$kpc$^{-2}$]', \
 #--------------------------------------------------------------------
 data_fields = ['POS ', 'VEL ', 'MASS', 'ID  ', 'GAGE']
 cat_fields = ['GroupFirstSub', 'Group_R_Crit200', 'SubhaloPos', 'SubhaloVel']
-header, cat, lf, data = get_data(halo, snapshot, data_fields=data_fields, cat_fields=cat_fields)
+header, cat, lf, data = get_data(halo, snapshot, GrNr=GrNr, SubhaloNumber=SubhaloNumber, data_fields=data_fields, cat_fields=cat_fields)
 
 # Find disc alignment:
 r200 = cat.Group_R_Crit200[0] * 1e3/h
@@ -52,7 +75,7 @@ print('Found alignment of stars...')
 # Load gas:
 data_fields = ['POS ', 'VEL ', 'MASS', 'ID  ', 'GMET', 'SFR ', 'RHO ']
 cat_fields = ['GroupFirstSub', 'Group_R_Crit200', 'SubhaloPos', 'SubhaloVel']
-header, cat, lf, data = get_data(halo, snapshot, data_fields=data_fields, cat_fields=cat_fields, PtType=0)
+header, cat, lf, data = get_data(halo, snapshot, GrNr=GrNr, SubhaloNumber=SubhaloNumber, data_fields=data_fields, cat_fields=cat_fields, PtType=0)
 
 # Align on stellar disc:
 data['POS '] = np.dot(disc_R, [*data['POS '].T]).T
@@ -62,10 +85,10 @@ print('Loaded gas...')
 
 # Create an attractive plot of the gas metallicity:
 #--------------------------------------------------------------------
-# SWITCH TO PYNBODY ONLY?
 from sphviewer.tools import QuickView
 
-slice = np.abs(data['POS '][:,2]) <= 0.5 # [kpc]
+delta = 1 # [kpc]
+slice = np.abs(data['POS '][:,2]) <= delta/2. # [kpc]
 
 width = 100
 extent = np.array([-1,1,-1,1]) * width/2.
@@ -87,10 +110,12 @@ MgFe_img[np.isinf(MgFe_img)] = np.nanmin(MgFe_img[MgFe_img != -np.inf])
 density_img = QuickView(data['POS '][slice], mass=data['MASS'][slice], \
                         r='infinity', x=0, y=0, z=0, extent=list(extent), plot=False, logscale=False).get_image().T
 
-#velocity_img = QuickView(data['POS '][slice], mass=np.linalg.norm(data['VEL '][slice], axis=1) * data['MASS'][slice], \
-#                         r='infinity', x=0, y=0, z=0, extent=list(extent), plot=False, logscale=False).get_image().T
-velocity_img = QuickView(data['POS '][slice], mass=data['SFR '][slice] * data['MASS'][slice], \
-                         r='infinity', x=0, y=0, z=0, extent=list(extent), plot=False, logscale=False).get_image().T
+SF_img = QuickView(data['POS '][slice], mass=data['SFR '][slice] * data['MASS'][slice], \
+                   r='infinity', x=0, y=0, z=0, extent=list(extent), plot=False, logscale=False).get_image().T
+
+# Plug gaps in metal arrays:
+FeH_img = remove_nan(FeH_img, sigma=5)
+MgFe_img = remove_nan(MgFe_img, sigma=5)
 #--------------------------------------------------------------------
 
 # Plot the result:
@@ -100,9 +125,10 @@ fig, ax = plt.subplots(figsize=(6,6), nrows=2, ncols=2, gridspec_kw={'hspace':0.
 
 # Add a map for SFR!
 
-img1 = ax[0,0].imshow(np.log10(density_img).T, origin='lower', extent=extent, cmap=density_cmap)
-img2 = ax[0,1].imshow(np.log10(velocity_img/density_img).T, origin='lower', extent=extent, cmap=v_cmap)
+img1 = ax[0,0].imshow(np.log10(density_img).T, origin='lower', extent=extent, cmap=density_cmap, vmin=2.5)
+img2 = ax[0,1].imshow(np.log10(SF_img/density_img).T, origin='lower', extent=extent, cmap=v_cmap)
 img3 = ax[1,0].imshow(FeH_img.T, origin='lower', extent=extent, cmap=metal_cmap)
+img3.set_clim(vmin=max(img3.get_clim()[0], -2.5))
 img4 = ax[1,1].imshow(MgFe_img.T, origin='lower', extent=extent, cmap=alpha_cmap)
 
 # Still need: colourbars, distance bars, etc
@@ -128,6 +154,18 @@ for lw, color, order, capstyle in zip([3,1], ['k', 'w'], [100, 101], ['projectin
 # Distance bar labels:
 ax[0,0].text(corner1 + ruler/2., corner2 - 0.025*width/2.,  r'$%.0f\,$kpc' % ruler, \
              va='top', ha='center', color='w', fontsize=fs-2, path_effects=paths)
+
+# Add delta:
+ax[0,0].text(0.95, 0.95, r'$\Delta Z=%s\,$kpc' % delta, va='top', ha='right', color='w', \
+             fontsize=fs-2, path_effects=paths, transform=ax[0,0].transAxes)
+
+# Add time:
+ax[0,0].text(0.05, 0.05, r'z=%.2f' % abs(1/header.time-1), va='bottom', ha='left', color='w', \
+             fontsize=fs-2, path_effects=paths, transform=ax[0,0].transAxes)
+
+# Add halo identifier:
+ax[0,0].text(0.95, 0.05, r'Au-%s' % halo, va='bottom', ha='right', color='w', \
+             fontsize=fs-2, path_effects=paths, transform=ax[0,0].transAxes)
 #--------------------------------------------------------------------
 
 # Colorbars:
@@ -146,6 +184,8 @@ for i, (axes, img, clabel) in enumerate(zip(np.ravel(fig.get_axes()), [img1, img
   cbar.ax.tick_params(labelsize=fs-2)
   cax.xaxis.set_label_position(position)
   cax.xaxis.set_ticks_position(position)
+
+plt.savefig('./images/gas_images/Au-%s/gasmaps_Au-%s_snap%i.pdf' % (halo, halo, snapshot), bbox_inches='tight')
 #--------------------------------------------------------------------
 
 # Find a 3D power spectrum equivalent:
@@ -167,10 +207,11 @@ s.g['H'] = s.g['mass'] * data['GMET'][:,metals['H']['ID']]
 fs = 12
 fig, ax = plt.subplots(figsize=(6,6))
 
-width = 100
-N_bins = 500
+width = 50
+N_bins = 250
+power = {}
 
-for qty, label in zip(['rho', 'FeH', 'MgFe'], ['Density', '[Fe/H]', '[Mg/Fe]']):
+for qty, label in zip(['rho', 'FeH', 'MgFe'], ['Norm Density', 'Norm [Fe/H]', 'Norm [Mg/Fe]']):
   print('>    %s' % qty)
 
   if qty is 'rho':
@@ -205,12 +246,18 @@ for qty, label in zip(['rho', 'FeH', 'MgFe'], ['Density', '[Fe/H]', '[Mg/Fe]']):
   import scipy.stats as stats
   A_bins, _, _ = stats.binned_statistic(k_norm, fourier_amps, statistic='mean', bins=k_bins)
   A_bins *= 4./3. * np.pi * (k_bins[1:]**3 - k_bins[:-1]**3)
+  power[qty] = A_bins
 
-  ax.loglog(width/k_vals, A_bins, label=label)
+  ax.loglog(width/k_vals, power[qty], label=label)
 
 ax.set_xlabel(r'Wavelength [kpc]', fontsize=fs)
 ax.set_ylabel(r'$P(k)$', fontsize=fs)
 ax.tick_params(axis='both', labelsize=fs-2)
 ax.legend(fontsize=fs-2)
-#--------------------------------------------------------------------
+ax.label_outer()
 
+string = 'Au-%s' % halo + '\n' + r'z=%.2f' % abs(1/header.time-1)
+ax.text(0.95, 0.05, string, va='bottom', ha='right', fontsize=fs-2, transform=ax.transAxes)
+
+plt.savefig('./images/gas_images/Au-%s/gaspower_Au-%s_snap%i.pdf' % (halo, halo, snapshot), bbox_inches='tight')
+#--------------------------------------------------------------------

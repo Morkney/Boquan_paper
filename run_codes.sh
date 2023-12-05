@@ -7,5 +7,7 @@ inputs=("1" "2" "3" "4" "5" "6" "7" "8" "9" "10" "11" "12" "13" "14" "15" "16" "
 for input in "${inputs[@]}"
 do
   echo $input
-  python mergers_vs_ratios.py $input
+  #python merger_tree_metals.py $input
+  #python metal_alpha_plane.py $input
+  python merger_statistics.py $input
 done
