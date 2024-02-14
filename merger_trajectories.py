@@ -1,5 +1,5 @@
 import numpy as np
-from scipy.interpolate import make_interp_spline, CubicHermiteSpline
+from scipy.interpolate import make_interp_spline
 import sys
 
 import h5py
@@ -15,7 +15,10 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 from matplotlib.pyplot import cm
 from matplotlib.colors import LogNorm
-plt.ion()
+from mpl_toolkits.axes_grid1 import make_axes_locatable
+from matplotlib.collections import LineCollection
+plt.ioff()
+#plt.ion()
 
 # Select the simulation:
 #--------------------------------------------------------------------
@@ -44,12 +47,15 @@ IDs = {}
 while ID != -1:
   IDs[f['SnapNum'][ID]] = ID
   ID = f['FirstProgenitor'][ID]
+if halo==9:
+  IDs[51] = IDs[50]
 main_IDs = [IDs[i] for i in f['SnapNum'][:][pkmassids]]
 mass_ratios = f['SubhaloMassType'][:][pkmassids].sum(axis=1) / \
               f['SubhaloMassType'][:][main_IDs].sum(axis=1)
 
-pkmassids = pkmassids[(mass_ratios > 1/30.) | (pkmasses > 1e10)]
-pkmasses = pkmasses[(mass_ratios > 1/30.) | (pkmasses > 1e10)]
+mass_range = ((mass_ratios > 1/20.) | (pkmasses > 1e10)) & (pkmasses > 1e9)
+pkmassids = pkmassids[mass_range]
+pkmasses = pkmasses[mass_range]
 #--------------------------------------------------------------------
 
 # Step 3; find the progenitor histories of all mergers:
@@ -124,7 +130,8 @@ ax[1].set_ylim(ymin=1e-1)
 ax[1].legend(fontsize=fs-4, loc='lower right')
 
 # Trajectories:
-factor = 10
+cmap = cm.gnuplot
+factor = 5
 a = 1 / (1+redshifts)
 times = np.array([auriga.age_time(i) for i in a])
 r200s = f['Group_R_Crit200'][:][f['FirstHaloInFOFGroup'][:][IDs]] * 1e3/h
@@ -136,14 +143,35 @@ for pkmassid, pkmass in zip(pkmassids, pkmasses):
   overlap2 = np.in1d(f['SnapNum'][:][merger_IDs[pkmassid]], f['SnapNum'][:][IDs])
   orig_res = f['SnapNum'][:][merger_IDs[pkmassid]][overlap2]
   spline_res = np.linspace(*orig_res[[0,-1]], len(orig_res)*factor)
+
+  # Orbital radius:
   pos = (f['SubhaloPos'][:][merger_IDs[pkmassid]][overlap2] - f['SubhaloPos'][:][IDs][overlap1])*1e3/h
   vel = (f['SubhaloVel'][:][merger_IDs[pkmassid]][overlap2] - f['SubhaloVel'][:][IDs][overlap1])#*np.vstack(np.sqrt(1/a[orig_res]))
   pos = make_interp_spline(orig_res, pos, k=3)(spline_res)
   RG = np.linalg.norm(pos, axis=1)
+
+  # Time:
   time = end_time - np.interp(spline_res, orig_res, times[orig_res])
 
-  ax[0].plot(time, RG)
-  ax[0].plot(time[-1], RG[-1], 'kx', markersize=4)
+  # Subhalo star formation rate:
+  SFR_min = -4
+  SFR_max = 1
+  SFR = f['SubhaloSFR'][:][merger_IDs[pkmassid]][overlap2]
+  SFR = np.log10(np.interp(spline_res, orig_res, SFR))
+  SFR[np.isinf(SFR) | np.isnan(SFR)] = SFR_min
+  line_colour = cmap(auriga.normalise(SFR, 0,1, SFR_min,SFR_max))
+
+  # Subhalo total mass:
+  sub_mass = f['SubhaloMassType'][:][merger_IDs[pkmassid]][overlap2].sum(axis=1) * 1e10/h
+  host_mass = f['SubhaloMassType'][:][IDs][overlap1].sum(axis=1) * 1e10/h
+  mass_ratio = make_interp_spline(orig_res, sub_mass/host_mass, k=3)(spline_res)
+  linewidths = auriga.normalise(mass_ratio, 1,6, (1/20.),(1/4.))
+
+  line_segments = LineCollection([np.column_stack([[time[i], time[i+1]], [RG[i], RG[i+1]]]) for i in range(len(time)-1)], \
+                                 linewidths=linewidths, capstyle='round', color=line_colour, rasterized=False, joinstyle='round')
+  ax[0].add_collection(line_segments)
+  #ax[0].plot(time, RG)
+  #ax[0].plot(time[-1], RG[-1], 'kx', markersize=4)
 
   # Find intercept at top of plot:
   intercept = abs(RG - r200s.max()*1.1).argmin()
@@ -154,9 +182,20 @@ for pkmassid, pkmass in zip(pkmassids, pkmasses):
     intercept = 0
   else:
     continue
-  string = r'$%i, %s\,$M$_{\odot}$' % (pkmassid, auriga.latex_float(pkmass))
+  string = r'%s' % pkmassid
   ax[0].text(time[intercept], 1.03, string, va='bottom', ha='center', \
              transform=ax[0].get_xaxis_transform(), fontsize=fs-8, rotation=90)
+
+# Add a colourbar:
+norm = mpl.colors.Normalize(vmin=SFR_min, vmax=SFR_max)
+sm = cm.ScalarMappable(norm=norm, cmap=cmap)
+sm.set_array([])
+l, b, w, h = ax[0].get_position().bounds
+cax = fig.add_axes([l + w*1.01, b, w*0.01, h])
+cbar = plt.colorbar(sm, cax=cax)
+string = r'$\log_{10}$ SFR' + '\n' + r'[M$_{\odot}\,\rm{yr}^{-1}$]'
+cbar.set_label(string, fontsize=fs)
+cbar.ax.tick_params(labelsize=fs-2)
 
 ax[0].set_ylabel(r'$R_{\rm G}$ [ckpc]', fontsize=fs)
 
@@ -170,26 +209,6 @@ for i in range(3):
   ax[i].set_xlim([13.5, 0])
 ax[2].set_xlabel('Lookback time [Gyr]', fontsize=fs)
 
-fig.suptitle(r'Au-%i' % halo, fontsize=fs, y=0.975)
+fig.suptitle(r'Au-%i' % halo, fontsize=fs, y=0.95)
 
 plt.savefig('./images/infalls/merger_infalls_Au-%i.pdf' % halo, bbox_inches='tight')
-
-# Add a redshift axis:
-'''
-times = ax[2].get_xticks()
-real_time = end_time-times
-real_time = real_time[real_time >= 0]
-z = (1/auriga.time_age(real_time))-1
-for i in [0, 1, 2]:
-  redshift_ax = ax[i].twiny()
-  redshift_ax.set_position(ax[i].get_position())
-  redshift_ax.set_xticks(times)
-  redshift_ax.set_xlim(ax[0].get_xlim())
-  plt.sca(ax[1])
-  redshift_ax.set_xticklabels([])
-  redshift_ax.minorticks_off()
-  if i == 0:
-    redshift_ax.set_xticklabels(['%.2g' % x for x in z])
-    redshift_ax.set_xlabel(r'Redshift', fontsize=fs)
-    redshift_ax.tick_params(axis='x', labelsize=fs-2)
-'''

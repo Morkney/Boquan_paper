@@ -4,6 +4,7 @@ import sys
 
 from auriga_config import *
 import auriga_functions as auriga
+import misc_funcs as misc
 
 import default_setup
 import matplotlib as mpl
@@ -36,10 +37,11 @@ MainHalo = 0
 
 MinMassRatio = 1/20. # Minimum merger ratio
 MinMass = 1e9
+r_cut = (0.3, 30)
 cmap = cm.Spectral_r
 
 dpi = 5
-fs = 10
+fs = 9
 aspect = None
 TimeAxis = True
 LabelHalos = True
@@ -269,7 +271,7 @@ else:
   AxisRatio = (SubSnapNum.max() - SubSnapNum.min()) / (Order.max() - Order.min())
   AxisRatio = min(AxisRatio, 6)
 metal_axis = 1.5
-fig, ax = plt.subplots(figsize=(fig_size, metal_axis+fig_size/AxisRatio), nrows=2, ncols=1, gridspec_kw={'hspace':0.0, 'wspace':0.0, 'height_ratios':[metal_axis, fig_size/AxisRatio]})
+fig, ax = plt.subplots(figsize=(fig_size, metal_axis+fig_size/AxisRatio), nrows=2, ncols=1, gridspec_kw={'hspace':0.05, 'wspace':0.0, 'height_ratios':[metal_axis, fig_size/AxisRatio]})
 
 # Define the size of the nodes:
 MinDotSize = 1
@@ -378,8 +380,8 @@ if direction == 'left to right':
 elif direction == 'right to left':
   location = 'upper right'
 handles, labels = ax[1].get_legend_handles_labels()
-reorder = [5,6,7,8,9,0,1,2,3,4]
-ax[1].legend([handles[idx] for idx in reorder],[labels[idx] for idx in reorder], frameon=False, loc=location, fontsize=fs-1, ncol=2)
+reorder = [4,5,6,7,8,9,0,1,2,3]
+ax[1].legend([handles[idx] for idx in reorder],[labels[idx] for idx in reorder], frameon=False, loc=location, fontsize=fs-1, ncol=2, labelspacing=0.2)
 #--------------------------------------------------------------------
 
 # Colorbar:
@@ -458,27 +460,47 @@ metal_range = np.nanpercentile(data['MgFe'][data['IN  '] & \
 metal_range += [-0.025, 0.025]
 metal_bins = np.linspace(*metal_range, 125)
 
-hist = np.histogram2d(data['GAGE'][data['IN  ']], data['MgFe'][data['IN  ']], bins=[a_bins, metal_bins], weights=data['MASS'][data['IN  ']])[0]
-hist /= np.vstack(np.diff(a_bins))
-ax[0].imshow(hist.T, extent=[snap_bins[0],snap_bins[-1], *metal_range], norm=LogNorm(), origin='lower', cmap=cm.Greys, rasterized=True)
+# Divisor may not be entirely accurate:
+divisor = np.vstack(np.diff(a_bins)) / np.mean(np.diff(a_bins))
+hist, proprange, densrange, stamp = misc.cmap_2D_hist(prop=np.log10(data['RG  '][data['IN  ']]), x=data['GAGE'][data['IN  ']], y=data['MgFe'][data['IN  ']], z=data['MASS'][data['IN  ']], \
+                                                      bins=[a_bins, metal_bins], cmap='rainbow', proprange=[*np.log10(r_cut)], densrange=[5,99.9], divisor=divisor)
+ax[0].imshow(hist, extent=[*snap_bins[[0,-1]],*metal_range], norm=LogNorm(), origin='lower', rasterized=True)
 ax[0].set_aspect('auto')
 ax[0].invert_xaxis()
 
 ax[0].set_xticks(new_tick_locations)
 ax[0].set_xticklabels(['%.2g' % round(i, tick_precision) for i in new_tick_labels])
 ax[0].set_xlabel(r'Redshift', fontsize=fs)
-ax[0].tick_params(axis='x', labelsize=fs-2)
+ax[0].tick_params(axis='both', labelsize=fs-2)
 ax[0].minorticks_off()
 
 ax[0].label_outer()
-ax[0].set_yticks([])
+ax[0].yaxis.tick_left()
 ax[0].set_xticks([])
 ax[0].tick_params(axis='x', which='both', direction='out')
 ax[0].tick_params(top=False, which='both')
-for spine in ['left', 'right', 'top', 'bottom']:
+for spine in ['right', 'top', 'bottom']:
   ax[0].spines[spine].set_visible(False)
 
+ax[0].set_ylabel('[Mg/Fe]', fontsize=fs)
+#--------------------------------------------------------------------
+
+# Add the other colourbar:
+#--------------------------------------------------------------------
+l, b, w, h = ax[0].get_position().bounds
+cax = fig.add_axes([l+ w*1.01, b, w*0.01*3, h])
+cax.imshow(np.transpose(stamp.cmap, axes=[1,0,2]), origin='lower', aspect='auto', extent=[*densrange, *proprange])
+cax.tick_params(axis='both', labelsize=fs-2)
+cax.set_ylabel(r'$\log_{10}(R_{\rm G})$ [kpc]', fontsize=fs-2)
+cax.set_xlabel(r'$\log_{10}(\rho)$', fontsize=fs-2)
+cax.yaxis.set_label_position("right")
+cax.yaxis.tick_right()
+cax.xaxis.set_label_position('top')
+cax.xaxis.tick_top()
+#--------------------------------------------------------------------
+
 # Twinned axis for linear time:
+#--------------------------------------------------------------------
 if TimeAxis:
   times = auriga.age_time(1) - np.array([auriga.age_time(1/(1+i)) for i in new_tick_labels])
   time_ax = ax[0].twiny()
