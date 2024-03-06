@@ -16,8 +16,8 @@ from matplotlib.pyplot import cm
 from matplotlib.colors import LogNorm
 from matplotlib.collections import LineCollection
 import matplotlib.patheffects as path_effects
-#mpl.use('Agg')
-plt.ion()
+mpl.use('Agg')
+#plt.ion()
 
 from scipy.ndimage import gaussian_filter
 from scipy.stats import binned_statistic_2d
@@ -52,7 +52,7 @@ SubhaloNumber = f['SubhaloNumber'][ID]
 #--------------------------------------------------------------------
 density_cmap = cm.cubehelix
 metal_cmap = cm.viridis
-alpha_cmap = cm.plasma
+alpha_cmap = cm.inferno
 temp_cmap = cm.gist_heat
 clabels = [r'$\log_{10}$ Density [M$_{\odot}\,$kpc$^{-2}$]', \
            r'Temperature [K]', \
@@ -91,10 +91,12 @@ data['TEMP'] = auriga.temperature(data['U   '], data['NE  '])
 #--------------------------------------------------------------------
 from sphviewer.tools import QuickView
 
-delta = 100 # [kpc]
+cdelta = 200 # [ckpc]
+delta = cdelta * header.time
 slice = np.abs(data['POS '][:,2]) <= delta/2. # [kpc]
 
-width = 100
+cwidth = 200 # [ckpc]
+width = cwidth * header.time
 extent = np.array([-1,1,-1,1]) * width/2.
 rho_img = QuickView(data['POS '][slice], mass=data['RHO '][slice], \
                     r='infinity', x=0, y=0, z=0, extent=list(extent), plot=False, logscale=False).get_image().T
@@ -152,10 +154,10 @@ img2 = ax[0,1].imshow(np.log10(temp_img).T, origin='lower', extent=extent, cmap=
 img2.set_clim(*np.nanpercentile(np.log10(temp_img[filled]), [0.5,99.5]))
 
 img3 = ax[1,0].imshow(FeH_img.T, origin='lower', extent=extent, cmap=metal_cmap)
-img3.set_clim(vmin=max(-3, np.nanpercentile(FeH_img[filled], 1)), vmax=np.nanmax(FeH_img[filled]))
+img3.set_clim(vmin=max(-3, np.nanpercentile(FeH_img[filled], 1)), vmax=np.nanpercentile(FeH_img[filled], 99.9))
 
 img4 = ax[1,1].imshow(MgFe_img.T, origin='lower', extent=extent, cmap=alpha_cmap)
-img4.set_clim(*np.nanpercentile(MgFe_img[filled], [0.1,99.9]))
+img4.set_clim(*np.nanpercentile(MgFe_img[filled], [0.25,99.9]))
 
 # Still need: colourbars, distance bars, etc
 # Remove margins and ticks:
@@ -182,7 +184,7 @@ ax[0,0].text(corner1 + ruler/2., corner2 - 0.025*width/2.,  r'$%.0f\,$kpc' % rul
              va='top', ha='center', color='w', fontsize=fs-4, path_effects=paths)
 
 # Add delta:
-ax[0,0].text(0.95, 0.95, r'$\Delta Z=%s\,$kpc' % delta, va='top', ha='right', color='w', \
+ax[0,0].text(0.95, 0.95, r'$\Delta Z=%s\,$ckpc' % cdelta, va='top', ha='right', color='w', \
              fontsize=fs-4, path_effects=paths, transform=ax[0,0].transAxes)
 
 # Add time:
@@ -232,7 +234,7 @@ s.g['temp'] = data['TEMP']
 
 # Find the maximum width:
 min_box_width = np.abs(np.percentile(data['POS '], [1,99], axis=0)).min()
-width = min(min_box_width, 30)
+width = min(min_box_width, 50)
 N_bins = 250
 power = {}
 
@@ -274,8 +276,9 @@ for qty, colour, label in zip(['rho', 'FeH', 'MgFe', 'temp'], colours, labels):
   A_bins, _, _ = stats.binned_statistic(k_norm, fourier_amps, statistic='mean', bins=k_bins)
   A_bins *= 4./3. * np.pi * (k_bins[1:]**3 - k_bins[:-1]**3)
   power[qty] = A_bins
+  #normed_power = power[qty] / np.abs(np.trapz(power[qty], x=width/k_vals))
+  normed_power = power[qty] / np.abs(np.trapz(power[qty], x=k_vals))
 
-  normed_power = power[qty] / np.trapz(power[qty], dx=0.1)
   ax2.loglog(width/k_vals, normed_power, label=label, color=colour)
 
 ax2.set_xlabel(r'Wavelength [kpc]', fontsize=fs)
@@ -285,5 +288,3 @@ ax2.legend(fontsize=fs)
 #--------------------------------------------------------------------
 
 plt.savefig('./images/gas_images/frame_%i.png' % snapshot, bbox_inches='tight', dpi=300)
-
-# Make an animation:

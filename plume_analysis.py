@@ -11,6 +11,7 @@ import snapHDF5 as snap
 import readhaloHDF5
 import readsubfHDF5
 from get_halo import get_data
+import misc_funcs as misc
 
 import default_setup
 import matplotlib as mpl
@@ -43,25 +44,24 @@ with open('./files/merger_dict.pk1', 'rb') as file:
 
 # Plotting preferences:
 #--------------------------------------------------------------------
-width = 75 # [kpc]
-extent = np.array([-width, width, -width, width])
+cwidth = 150 # [ckpc]
 z_cut = 10
 
 density_cmap = cm.cubehelix
 metal_cmap = cm.viridis
-alpha_cmap = cm.plasma
+alpha_cmap = cm.inferno
 v_cmap = cm.magma
 temp_cmap = cm.gist_heat
 mach_cmap = cm.gist_stern
 vr_cmap = cm.PuOr_r
-sfr_cmap = cm.gnuplot
+sfr_cmap = cm.winter
 
 clabels = [r'$\log_{10}$ Density [M$_{\odot}\,$kpc$^{-2}$]', \
            r'$\log_{10}$ SFR [M$_{\odot}\,$yr$^{-1}$]', \
            r'$\log_{10}$ Temperature [k]', \
            r'[Fe/H]', \
            r'[Mg/Fe]', \
-           r'Mach number $M$']
+           r'Mach number $\mathcal{M}$']
 
 clabels = [r'$\log_{10}$ Density [M$_{\odot}\,$kpc$^{-2}$]', \
            r'[Mg/Fe]', \
@@ -89,8 +89,8 @@ def remove_nan(U, sigma=1):
   V[np.isnan(U)] = (VV/WW)[np.isnan(U)]
   return V
 
-if not os.path.isdir('./images/Au-%i_gas_plume' % halo):
-  os.mkdir('./images/Au-%i_gas_plume' % halo)
+if not os.path.isdir('./images/gas_plumes/Au-%i_gas_plume' % halo):
+  os.mkdir('./images/gas_plumes/Au-%i_gas_plume' % halo)
 
 # Find all of the mergers that passed near the centre of the host:
 #--------------------------------------------------------------------
@@ -103,8 +103,10 @@ host_masses = f['SubhaloMassType'][:][f['FirstHaloInFOFGroup'][:][f['Descendant'
 mass_ratios = merger_masses / host_masses
 
 # Mergers must have small pericentres, not too early, high-ratio, and radial:
-merger_ids = merger_ids[(peris <= 15) & ((auriga.age_time(1)-peri_ts) < 12.) & (mass_ratios > 1/30.) & (v_ratios > 0.)]
-
+merger_ids = merger_ids[(peris <= (50*auriga.time_age(peri_ts))) & \
+                        ((auriga.age_time(1)-peri_ts) < 12.) & \
+                        (mass_ratios > 1/40.) & \
+                        (v_ratios > 0.)]
 # Get host IDs:
 host_ID = 0
 host_IDs = []
@@ -149,14 +151,41 @@ for merger_pkmassID in merger_ids:
   vel = (f['SubhaloVel'][:][merger_IDs] - f['SubhaloVel'][:][host_IDs]) * np.vstack(np.sqrt(a[snapshots]))
   #--------------------------------------------------------------------
 
+  # Make a spline of the merger trajectory:
+  #--------------------------------------------------------------------
+  factor = 20
+  k = min(3, len(pos)-1)
+  orig_res = f['SnapNum'][:][merger_IDs]
+  spline_res = np.linspace(*orig_res[[0,-1]], len(orig_res)*factor)
+  pos = make_interp_spline(orig_res, pos, k=k)(spline_res)
+  if props['Au-%i' % halo][merger_pkmassID]['z_peri'] < redshifts[orig_res][-1]:
+    step = np.diff([pos[-2], pos[-1]], axis=0)[0]
+    extrapolate = np.linspace(step, step*200, 200)
+    pos = np.append(pos, pos[-1]+extrapolate, axis=0)
+
+  # Find the pericentre:
+  diff = np.diff(np.linalg.norm(pos, axis=1))
+  peri = np.where((diff[1:] > 0) & (diff[:-1] < 0))[0] + 1
+  if not len(peri):
+    peri = -1
+  else:
+    peri = peri[0]
+
+  # Movement vector:
+  vec = pos[peri] - pos[peri-1]
+
+  # Alignment:
+  merger_R = np.dot(misc.R_z(-np.pi/2.), misc.align_orbit(vec, vec))
+  pos = np.dot(merger_R, [*pos.T]).T
+  theta = misc.angle(pos[peri][[1,2]], [1., 0.])
+  rotate_x = misc.R_x(-np.sign(pos[peri][2]) * theta)
+  pos = np.dot(rotate_x, [*pos.T]).T
+  #--------------------------------------------------------------------
+
   # Calculate the rotation matrix to align with the merger:
   #--------------------------------------------------------------------
   # Find snapshot closest to pericentre:
   peri_snap = np.abs(redshifts - props['Au-%i' % halo][merger_pkmassID]['z_peri']).argmin()
-  peri_index = np.abs(snapshots - peri_snap).argmin()
-
-  Y_R = np.array([[0,0,1],[0,1,0],[-1,0,0]])
-  merger_R = np.dot(Y_R, auriga.faceon_matrix(-vel[peri_index]))
 
   # Find host ID N snapshots before pericentre:
   host_ID = host_map[peri_snap]
@@ -164,18 +193,18 @@ for merger_pkmassID in merger_ids:
     host_ID = f['FirstProgenitor'][host_ID]
   #--------------------------------------------------------------------
 
-  # Make a spline of the merger trajectory:
+  # Create list of snapshots, where middle snapshot is first in the list:
   #--------------------------------------------------------------------
-  factor = 10
-  k = min(3, len(pos)-1)
-  orig_res = f['SnapNum'][:][merger_IDs]
-  spline_res = np.linspace(*orig_res[[0,-1]], len(orig_res)*factor)
-  pos = np.dot(merger_R, [*pos.T]).T
-  pos = make_interp_spline(orig_res, pos, k=k)(spline_res)
+  host_IDs = []
+  for i in range(1+snapshot_pad*2):
+    host_IDs.append(host_ID)
+    host_ID = f['Descendant'][host_ID]
+  host_IDs = np.array(host_IDs)
+  host_IDs[[0,snapshot_pad]] = host_IDs[[snapshot_pad,0]]
   #--------------------------------------------------------------------
 
   # Loop over each snapshot, starting from before pericentre passage and ending several snapshots afterwards:
-  for i in range(0, 1+snapshot_pad*2):
+  for i, host_ID in enumerate(host_IDs):
   #--------------------------------------------------------------------
     print('>    %i' % i)
 
@@ -199,6 +228,8 @@ for merger_pkmassID in merger_ids:
     # Gas density, gas velocity, [Fe/H], [Mg/Fe]:
     #------------------------------------------------------------------
     # Prepare a thin slice in z:
+    width = cwidth * header.time
+    extent = np.array([-width, width, -width, width])
     slice = (data['POS '][:,0] < width*1.1) & (data['POS '][:,1] < width*1.1) & (np.abs(data['POS '][:,2]) < z_cut)
 
     rho_img = QuickView(data['POS '][slice], mass=data['RHO '][slice], \
@@ -208,9 +239,9 @@ for merger_pkmassID in merger_ids:
 
     elements = ['Fe', 'H', 'Mg']
     metal_img = {}
-    for i in elements:
-      abundance = data['GMET'][:,metals[i]['ID']]
-      metal_img[i] = QuickView(data['POS '][slice], mass=(abundance*data['MASS']*data['RHO '])[slice], \
+    for j in elements:
+      abundance = data['GMET'][:,metals[j]['ID']]
+      metal_img[j] = QuickView(data['POS '][slice], mass=(abundance*data['MASS']*data['RHO '])[slice], \
                      r='infinity', x=0, y=0, z=0, extent=list(extent), plot=False, logscale=False).get_image().T / rho_img
 
     FeH_img = np.log10((metal_img['Fe']/metals['Fe']['mass']) / (metal_img['H']/metals['H']['mass'])) \
@@ -237,7 +268,7 @@ for merger_pkmassID in merger_ids:
     mach_img = QuickView(data['POS '][slice], mass=data['EDIS'][slice] * data['TEMP'][slice], \
                r='infinity', x=0, y=0, z=0, extent=list(extent), plot=False, logscale=False).get_image().T / edis_img
 
-    # Plug gaps in metal arrays:
+    # Plug gaps in img arrays:
     FeH_img = remove_nan(FeH_img, sigma=1)
     MgFe_img = remove_nan(MgFe_img, sigma=1)
     temp_img = remove_nan(temp_img, sigma=1)
@@ -250,37 +281,34 @@ for merger_pkmassID in merger_ids:
     fs = 12
     fig, ax = plt.subplots(figsize=(12,6), nrows=2, ncols=4, gridspec_kw={'hspace':0.0, 'wspace':0.0})
 
-    # Add a map for SFR!
     counts = np.histogram2d(data['POS '][slice,0], data['POS '][slice,1], range=[[*extent[[0,1]]], [*extent[[2,3]]]], bins=500)[0]
-    filled = counts > 0
+    filled = counts > 1
 
-    density = np.log10(density_img)[filled]
-    img1 = ax[0,0].imshow(np.log10(density_img).T, origin='lower', extent=extent, cmap=density_cmap, vmin=2.5)
-    img1.set_clim(*np.nanpercentile(density[np.abs(density)!=np.inf], [0.1,99.9]))
-
+    img1 = ax[0,0].imshow(np.log10(density_img).T, origin='lower', extent=extent, cmap=density_cmap)
     img2 = ax[0,1].imshow(MgFe_img.T, origin='lower', extent=extent, cmap=alpha_cmap)
-    img2.set_clim(*np.nanpercentile(MgFe_img[filled], [0.1,99.9]))
-
     img3 = ax[0,2].imshow(velocity_img.T, origin='lower', extent=extent, cmap=v_cmap)
-    img3.set_clim(*np.nanpercentile(velocity_img[filled], [1,99]))
-
     img4 = ax[0,3].imshow(np.log10(temp_img).T, origin='lower', extent=extent, cmap=temp_cmap)
-    img4.set_clim(*np.nanpercentile(np.log10(temp_img[filled]), [0.5,99.5]))
-
     img5 = ax[1,0].imshow(np.log10(SFR_img).T, origin='lower', extent=extent, cmap=sfr_cmap)
-    img5.set_clim(vmin=-7)
-
     img6 = ax[1,1].imshow(FeH_img.T, origin='lower', extent=extent, cmap=metal_cmap)
-    img6.set_clim(vmin=max(-3, np.nanpercentile(FeH_img[filled], 1)), vmax=np.nanmax(FeH_img[filled]))
-
     img7 = ax[1,2].imshow(vr_img.T, origin='lower', extent=extent, cmap=vr_cmap)
-    img7.set_clim(-np.nanpercentile(vr_img[filled], 99), np.nanpercentile(vr_img[filled], 99))
-
     img8 = ax[1,3].imshow(np.log10(mach_img).T, origin='lower', extent=extent, cmap=mach_cmap)
-    img8.set_clim(*np.nanpercentile(np.log10(mach_img[filled]), [1,99]))
+
+    # Set colourbar limits:
+    if i==0:
+      dens_clim = np.nanpercentile(np.log10(density_img)[filled][np.abs(np.log10(density_img)[filled])!=np.inf], [0.1,99.9])
+      MgFe_clim = np.nanpercentile(MgFe_img[filled], [0.25,99.9])
+      temp_clim = np.nanpercentile(np.log10(temp_img[filled]), [0.5,99.5])
+      SFR_clim = [-6, np.nanmax(np.log10(SFR_img))-0.2]
+      FeH_clim = [max(-3, np.nanpercentile(FeH_img[filled], 1)), np.nanpercentile(FeH_img[filled], 99.9)]
+      vr_clim = np.array([-1,1]) * 400 # np.nanpercentile(vr_img[filled], 99)
+      v_clim = np.nanpercentile(velocity_img[filled], [0.1,99])
+      mach_clim = np.nanpercentile(np.log10(mach_img[filled]), [1,99])
+    for img, clim in zip([img1,img2,img3,img4,img5,img6,img7,img8], \
+                         [dens_clim,MgFe_clim,v_clim,temp_clim,SFR_clim,FeH_clim,vr_clim,mach_clim]):
+      img.set_clim(*clim)
 
     # Remove margins and ticks:
-    for i, axes in enumerate(np.ravel(fig.get_axes())):
+    for j, axes in enumerate(np.ravel(fig.get_axes())):
       axes.set_facecolor('black')
       axes.set_xticks([])
       axes.set_yticks([])
@@ -308,16 +336,13 @@ for merger_pkmassID in merger_ids:
     # Distance bar labels:
     ax[0,0].text(corner1 + ruler/2., corner2 - 0.025*width, \
                  r'$%.0f\,$kpc' % ruler, va='top', ha='center', color='w', fontsize=fs-2, path_effects=paths)
-
     # Add delta:
     ax[0,0].text(0.95, 0.95, r'$\Delta Z=%s\,$kpc' % (z_cut*2), va='top', ha='right', color='w', \
                  fontsize=fs-2, path_effects=paths, transform=ax[0,0].transAxes)
-
     # Add time:
     string = r'$z=%.2f$' % header.redshift + '\n' +  r'$\tau=%.2f\,$Gyr' % (auriga.age_time(1)-auriga.age_time(1/(1+header.redshift)))
     ax[0,0].text(0.05, 0.05, string, va='bottom', ha='left', color='w', \
                  fontsize=fs-2, path_effects=paths, transform=ax[0,0].transAxes)
-
     # Add halo identifier:
     string = r'Au-%s' % halo + '\n' + r'%i' % merger_pkmassID
     ax[0,0].text(0.95, 0.05, string, va='bottom', ha='right', color='w', \
@@ -326,10 +351,10 @@ for merger_pkmassID in merger_ids:
 
     # Colorbars:
     #------------------------------------------------------------------
-    for i, (axes, img, clabel) in enumerate(zip(np.ravel(fig.get_axes()), [img1, img2, img3, img4, img5, img6, img7, img8], clabels)):
+    for j, (axes, img, clabel) in enumerate(zip(np.ravel(fig.get_axes()), [img1,img2,img3,img4,img5,img6,img7,img8], clabels)):
       pad = 0.025
       l, b, w, h = axes.get_position().bounds
-      if i > 3.5:
+      if j > 3.5:
         position = 'bottom'
         cax = fig.add_axes([l+pad, b - h*0.05, w-2*pad, h*0.05])
       else:
@@ -341,8 +366,4 @@ for merger_pkmassID in merger_ids:
       cax.xaxis.set_label_position(position)
       cax.xaxis.set_ticks_position(position)
     #------------------------------------------------------------------
-
-    # Update ID for the next snapshot:
-    host_ID = f['Descendant'][host_ID]
-
-    plt.savefig('./images/Au-%i_gas_plume/frame_halo%i_snapshot%i.png' % (halo, merger_pkmassID, f['SnapNum'][host_ID]))
+    plt.savefig('./images/gas_plumes/Au-%i_gas_plume/frame_halo%i_snapshot%i.png' % (halo, merger_pkmassID, f['SnapNum'][host_ID]))
